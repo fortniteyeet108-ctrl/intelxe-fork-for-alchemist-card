@@ -1,0 +1,6 @@
+{
+  "name": "IntelXE DG2 Port Workbench",
+  "description": "Milestone 1 driver porting workbench and verified patchset for Intel Arc A750 (DG2 / 0x56A1) on macOS Tahoe.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

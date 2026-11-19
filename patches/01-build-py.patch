@@ -1,0 +1,74 @@
+diff --git a/kernel/IntelXe/build.py b/kernel/IntelXe/build.py
+index 335bdb3..5001d7b 100644
+--- a/kernel/IntelXe/build.py
++++ b/kernel/IntelXe/build.py
+@@ -27,15 +27,29 @@ HERE=Path(__file__).resolve().parent          # kernel/IntelXe
+ REPO=HERE.parent.parent
+ FBDIR=HERE.parent/'IntelXeFB'                    # kernel/IntelXeFB
+ VER=(REPO/'VERSION').read_text().strip()       # the release that last rebuilt the kext
+-GUC='bmg_guc_70.bin'
+-GUC_SHA='de81c75f46a127c33cd59f604d800e9ffc7ed3495967ba0d8767cd6985ab398b'  # GuC 70.72.1
+-HUC='bmg_huc.bin'
+-HUC_SHA='747452aa8c4ed7760c68a80f3d913eafde9304d6f4db481e3f2aebb0a818bf15'  # HuC 8.2.10
++PLATFORM_FW = {
++ 'bmg': dict(
++  guc='bmg_guc_70.bin',
++  guc_sha='de81c75f46a127c33cd59f604d800e9ffc7ed3495967ba0d8767cd6985ab398b',  # GuC 70.72.1
++  huc='bmg_huc.bin',
++  huc_sha='747452aa8c4ed7760c68a80f3d913eafde9304d6f4db481e3f2aebb0a818bf15',  # HuC 8.2.10
++  fetch_hint='firmware/fetch.sh',
++ ),
++ 'dg2': dict(
++  guc='dg2_guc_70.bin',
++  guc_sha='e6e3f8b4480ba976c89c491ac736d6ce41fa82e0cf5726d0763142da3fe8a63b',  # GuC 70.53.0
++  huc=None,
++  huc_sha=None,
++  fetch_hint='firmware/fetch.sh --probe dg2',
++ ),
++}
+ # BMG-G31 (Arc Pro B70; xe_platform.cpp kIdsBMGG31): not supported, so not in the IOPCIMatch of the supported cards. Both
+ # kexts match it in a personality of its own ("<kext>-G31"); IntelXe::start refuses it unless the tester boot-arg
+ # -intelxe_allow_g31 is set (the entry's testerBootArg), and IntelXeFB attaches only after IntelXe brought the card up
+ # (IntelXeReady). tools/parity/devices.py checks these ids against the kernel's G31 entry.
+ G31_TESTER_MATCH='0xe2208086 0xe2218086 0xe2228086 0xe2238086'
++# DG2 Milestone 1 bring-up (Arc A750 0x56A1; xe_platform.cpp dg2): gated by -intelxe_allow_dg2.
++DG2_TESTER_MATCH='0x56a18086'
+ def run(cmd): subprocess.run([str(x) for x in cmd],check=True,cwd=HERE)
+ def main():
+  p=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
+@@ -47,6 +61,7 @@ def main():
+   help='MacKernelSDK checkout (default: $MACKERNELSDK or <repo>/external/MacKernelSDK)')
+  p.add_argument('--firmware',type=Path,default=REPO/'firmware',help='directory with bmg_guc_70.bin and bmg_huc.bin')
+  p.add_argument('--only',choices=['IntelXe','IntelXeFB'],help='build one kext only')
++ p.add_argument('--platform',choices=['bmg','dg2'],default='bmg',help='firmware set to embed (default: bmg; dg2 embeds GuC-only dg2_guc_70.bin)')
+  p.add_argument('--surfvram',type=int,choices=range(0,4),help='IntelXeSurfVramDefault in the personality: debug.intelxe.surfvram at boot (boot-arg intelxe_surfvram=N wins)')
+  a=p.parse_args();out=a.output.resolve()
+  sdk=a.sdk.resolve()
+@@ -60,11 +75,16 @@ def main():
+   '-DDRIVER_PRIVATE','-DAPPLE','-DNeXT','-fno-common','-Wall','-Wextra','-Wno-unused-parameter','-Wno-deprecated-declarations',
+   '-fdebug-compilation-dir=.']
+  if a.only in (None,'IntelXe'):
+-  for fwname,sha,name,inc in ((GUC,GUC_SHA,'kGucFw','guc_fw.inc'),(HUC,HUC_SHA,'kHucFw','huc_fw.inc')):
++  fwcfg=PLATFORM_FW[a.platform]
++  for fwname,sha,name,inc in ((fwcfg['guc'],fwcfg['guc_sha'],'kGucFw','guc_fw.inc'),(fwcfg['huc'],fwcfg['huc_sha'],'kHucFw','huc_fw.inc')):
++   if fwname is None:
++    (objdir/inc).write_text(f'static const uint8_t {name}[1] __attribute__((aligned(16))) = {{0}};\nstatic const uint32_t {name}Size = 0;\nstatic const char {name}Name[] = "";\n')
++    continue
+    src=a.firmware.resolve()/fwname
+-   if not src.is_file(): sys.exit(f'{src} is missing: run firmware/fetch.sh first')
++   if not src.is_file(): sys.exit(f'{src} is missing: run {fwcfg["fetch_hint"]} first')
+    fw=src.read_bytes()
+-   assert hashlib.sha256(fw).hexdigest()==sha, f'{src}: unexpected sha256'
++   got_sha=hashlib.sha256(fw).hexdigest()
++   assert got_sha==sha, f'{src}: unexpected sha256 (expected {sha}, got {got_sha}; run {fwcfg["fetch_hint"]})'
+    (objdir/inc).write_text(f'static const uint8_t {name}[] __attribute__((aligned(16))) = {{\n'+
+     '\n'.join(','.join(str(b) for b in fw[i:i+64])+',' for i in range(0,len(fw),64))+f'\n}};\nstatic const uint32_t {name}Size = {len(fw)};\n'+
+     f'static const char {name}Name[] = "{fwname}";\n')   # IntelXe::start: the platform descriptor must name this file
+@@ -115,6 +135,7 @@ def main():
+    CFBundleShortVersionString=VER,OSBundleCompatibleVersion='0.1.0',OSBundleLibraries=libs,
+    IOKitPersonalities={name:dict(CFBundleIdentifier=ident,IOClass=ioclass or name,IOProviderClass='IOPCIDevice',IOPCIMatch='0xe20b8086 0xe20c8086 0xe2118086 0xe2128086',**personality),
+     f'{name}-G31':dict(CFBundleIdentifier=ident,IOClass=ioclass or name,IOProviderClass='IOPCIDevice',IOPCIMatch=G31_TESTER_MATCH,**personality),
++    **({f'{name}-DG2':dict(CFBundleIdentifier=ident,IOClass=ioclass or name,IOProviderClass='IOPCIDevice',IOPCIMatch=DG2_TESTER_MATCH,**personality)} if name=='IntelXe' else {}),
+     **{k:dict(CFBundleIdentifier=ident,**v) for k,v in more.items()}},**extra)
+   (bundle/'Info.plist').write_bytes(plistlib.dumps(info))
+   syms=subprocess.check_output(['xcrun','nm','-u',str(exe)],text=True)

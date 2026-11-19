@@ -1,0 +1,43 @@
+diff --git a/kernel/IntelXe/IntelXe.h b/kernel/IntelXe/IntelXe.h
+index 2ee5f09..255d769 100644
+--- a/kernel/IntelXe/IntelXe.h
++++ b/kernel/IntelXe/IntelXe.h
+@@ -28,6 +28,8 @@ static constexpr uint32_t FORCEWAKE_ACK_RENDER = 0xd84;
+ static constexpr uint32_t FORCEWAKE_ACK_GT_MTL = 0xdfc;    // Xe2 GT domain ack (graphics_verx100 >= 1270)
+ static constexpr uint32_t GLOBAL_MOCS0 = 0x4000;           // XEHP_GLOBAL_MOCS(i), MCR, multicast write
+ static constexpr uint32_t PAT_ATS = 0x47fc, PAT_PTA = 0x4820;
++static constexpr uint32_t XEHP_FLAT_CCS_BASE_ADDR = 0x4910; // bits 31:8 in 64 KB units (DG2 MCR)
++static constexpr uint32_t XEHP_LNCFCMOCS0 = 0xb020;         // 32 dwords (64 x 16-bit L3CC entries, MCR)
+ static constexpr uint32_t GUC_STATUS = 0xc000;             // AUTH 31:30, MIA 18:16, UKERNEL 15:8, BOOTROM 7:1
+ static constexpr uint32_t BOOT_HASH_CHK = 0xc010, GUC_HEADER_INFO = 0xc014;
+ static constexpr uint32_t GUC_WOPCM_SIZE = 0xc050;         // SIZE 31:12, LOCKED bit 0
+@@ -37,6 +39,7 @@ static constexpr uint32_t UOS_RSA_SCRATCH0 = 0xc200;
+ static constexpr uint32_t DMA_ADDR_0_LOW = 0xc300, DMA_ADDR_0_HIGH = 0xc304, DMA_ADDR_1_LOW = 0xc308, DMA_ADDR_1_HIGH = 0xc30c;
+ static constexpr uint32_t DMA_COPY_SIZE = 0xc310, DMA_CTRL = 0xc314;
+ static constexpr uint32_t DMA_GUC_WOPCM_OFFSET = 0xc340;   // OFFSET 31:14, VALID bit 0
++static constexpr uint32_t GUC_TLB_INV_CR = 0xcee8;            // graphics < 20 GGTT TLB invalidation
+ static constexpr uint32_t PVC_GUC_TLB_INV_DESC0 = 0xcf7c, PVC_GUC_TLB_INV_DESC1 = 0xcf80;
+ static constexpr uint32_t XELP_EU_ENABLE = 0x9134;
+ static constexpr uint32_t XELP_GT_GEOMETRY_DSS_ENABLE = 0x913c;
+@@ -55,8 +58,12 @@ static constexpr uint32_t GSMBASE = 0x108100;
+ static constexpr uint32_t STOLEN_RESERVED = 0x1082c0;
+ static constexpr uint32_t SG_TILE_ADDR_RANGE0 = 0x1083a0;  // size GB 17:8, offset GB 7:1
+ static constexpr uint32_t FORCEWAKE_ACK_GT = 0x130044;
++static constexpr uint32_t GT_CORE_STATUS = 0x138060;        // RCN_MASK 2:0 (pre-12.70 GT C-state)
+ static constexpr uint32_t BMG_FAN_1_SPEED = 0x138140;
++static constexpr uint32_t GT_PERF_STATUS = 0x1381b4;        // CAGF 19:11 in 50/3 MHz units (pre-12.70)
+ static constexpr uint32_t BMG_VRAM_TEMPERATURE = 0x1382c0;
++static constexpr uint32_t RP_STATE_CAP_SNB = 0x145998;      // MCHBAR_MIRROR_BASE_SNB + 0x5998 (50 MHz units)
++static constexpr uint32_t FREQ_INFO_REC = 0x145ef0;         // RPE 15:8, RPA 31:16 (50 MHz units)
+ static constexpr uint32_t PCODE_SCRATCH0 = 0x138320;       // BOOT_STATUS 3:1 (4 critical, 7 non-critical failure)
+ static constexpr uint32_t BMG_PCIE_CAP = 0x138340;
+ static constexpr uint32_t BMG_PACKAGE_TEMPERATURE = 0x138434;
+@@ -285,7 +292,7 @@ static constexpr uint32_t hwspOff = 0, targetOff = 0x1000;
+ static constexpr uint32_t ringSize = 0x4000, lrcSize = 0x2000;                         // copy class: PPHWSP + 1 page
+ // Misc pages: BCS0 HWSP at 0, test target at 0x1000, per-engine HWSPs from 0x2000 (RCS0, CCS0-3), zeroed golden
+ // contexts per GuC class (xe_gt_lrc_size: copy 8 KB, render 16 KB, compute 12 KB on Xe2).
+-static constexpr uint32_t goldenOff = 0x8000, goldenRcsOff = 0xa000, goldenCcsOff = 0xe000, miscSize = 0x11000;
++static constexpr uint32_t goldenOff = 0x8000, goldenRcsOff = 0xa000, goldenCcsOff = 0x18000, miscSize = 0x26000;
+ 
+ // The primary GT's engines (xe_hw_engine.c engine_infos) this driver drives.
+ struct XeEngine {

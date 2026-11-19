@@ -1,0 +1,15 @@
+diff --git a/kernel/IntelXe/xe_platform.cpp b/kernel/IntelXe/xe_platform.cpp
+index 9b5c5cc..f1fc94c 100644
+--- a/kernel/IntelXe/xe_platform.cpp
++++ b/kernel/IntelXe/xe_platform.cpp
+@@ -112,8 +112,8 @@ constexpr XePlatformDesc dg2(bool atsm) {   // dg2_desc, ats_m_desc (DG2_FEATURE
+ 	d.gucMajor = 70;
+ 	d.gucMinor = 53;
+ 	d.dmcFw = atsm ? nullptr : "i915/dg2_dmc_ver2_08.bin";   // no HuC line for DG2 in XE_HUC_FIRMWARE_DEFS
+-	d.missing = "Xe_HPG (12.55): XeHP LRC images and register lists, xelp PAT / dg2 MOCS, 64K VRAM pages, DG2 "
+-		"workarounds (per G10/G11/G12 stepping), no standalone media GT, i915 GuC 70.53, no HuC in xe";
++	d.testerBootArg = atsm ? nullptr : "intelxe_allow_dg2";
++	d.missing = "Xe_HPG (12.55): Milestone 1 GuC bring-up only (display/Metal/full PPGTT deferred); i915 GuC 70.53, no HuC";
+ 	return mediaXem(graphicsXehpg(d));
+ }
+ constexpr XePlatformDesc mtl(uint16_t gfx) {   // mtl_desc (MTL and ARL)

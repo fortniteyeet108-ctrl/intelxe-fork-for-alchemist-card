@@ -1,0 +1,81 @@
+diff --git a/kernel/IntelXe/lrc.h b/kernel/IntelXe/lrc.h
+index ef72efc..e7f4d68 100644
+--- a/kernel/IntelXe/lrc.h
++++ b/kernel/IntelXe/lrc.h
+@@ -50,9 +50,8 @@
+ 
+ static const uint8_t xe2_rcs_offsets[] = {
+ 	XE2_CTX_COMMON,
+-	LRC_NOP(2),
+-	LRC_LRI(2, LRC_POSTED),
+-	LRC_REG16(0x5a8), LRC_REG16(0x5ac),
++	LRC_LRI(3, LRC_POSTED),
++	LRC_REG(0x1b0), LRC_REG16(0x5a8), LRC_REG16(0x5ac),
+ 	LRC_NOP(6),
+ 	LRC_LRI(1, 0),
+ 	LRC_REG(0x0c8),
+@@ -64,6 +63,50 @@ static const uint8_t xe2_xcs_offsets[] = {
+ 	0
+ };
+ 
++static const uint8_t gen12_xcs_offsets[] = {
++	LRC_NOP(1),
++	LRC_LRI(13, LRC_POSTED),
++	LRC_REG16(0x244), LRC_REG(0x034), LRC_REG(0x030), LRC_REG(0x038), LRC_REG(0x03c), LRC_REG(0x168), LRC_REG(0x140),
++	LRC_REG(0x110), LRC_REG(0x1c0), LRC_REG(0x1c4), LRC_REG(0x1c8), LRC_REG(0x180), LRC_REG16(0x2b4),
++	LRC_NOP(5),
++	LRC_LRI(9, LRC_POSTED),
++	LRC_REG16(0x3a8), LRC_REG16(0x28c), LRC_REG16(0x288), LRC_REG16(0x284), LRC_REG16(0x280), LRC_REG16(0x27c),
++	LRC_REG16(0x278), LRC_REG16(0x274), LRC_REG16(0x270),
++	0
++};
++
++static const uint8_t dg2_xcs_offsets[] = {
++	LRC_NOP(1),
++	LRC_LRI(15, LRC_POSTED),
++	LRC_REG16(0x244), LRC_REG(0x034), LRC_REG(0x030), LRC_REG(0x038), LRC_REG(0x03c), LRC_REG(0x168), LRC_REG(0x140),
++	LRC_REG(0x110), LRC_REG(0x1c0), LRC_REG(0x1c4), LRC_REG(0x1c8), LRC_REG(0x180), LRC_REG16(0x2b4), LRC_REG(0x120),
++	LRC_REG(0x124),
++	LRC_NOP(1),
++	LRC_LRI(9, LRC_POSTED),
++	LRC_REG16(0x3a8), LRC_REG16(0x28c), LRC_REG16(0x288), LRC_REG16(0x284), LRC_REG16(0x280), LRC_REG16(0x27c),
++	LRC_REG16(0x278), LRC_REG16(0x274), LRC_REG16(0x270),
++	0
++};
++
++static const uint8_t dg2_rcs_offsets[] = {
++	LRC_NOP(1),
++	LRC_LRI(15, LRC_POSTED),
++	LRC_REG16(0x244), LRC_REG(0x034), LRC_REG(0x030), LRC_REG(0x038), LRC_REG(0x03c), LRC_REG(0x168), LRC_REG(0x140),
++	LRC_REG(0x110), LRC_REG(0x1c0), LRC_REG(0x1c4), LRC_REG(0x1c8), LRC_REG(0x180), LRC_REG16(0x2b4), LRC_REG(0x120),
++	LRC_REG(0x124),
++	LRC_NOP(1),
++	LRC_LRI(9, LRC_POSTED),
++	LRC_REG16(0x3a8), LRC_REG16(0x28c), LRC_REG16(0x288), LRC_REG16(0x284), LRC_REG16(0x280), LRC_REG16(0x27c),
++	LRC_REG16(0x278), LRC_REG16(0x274), LRC_REG16(0x270),
++	LRC_NOP(2),
++	LRC_LRI(2, LRC_POSTED),
++	LRC_REG16(0x5a8), LRC_REG16(0x5ac),
++	LRC_NOP(6),
++	LRC_LRI(1, 0),
++	LRC_REG(0x0c8),
++	0
++};
++
+ static const uint8_t xe2_bcs_offsets[] = {
+ 	LRC_NOP(1),
+ 	LRC_LRI(15, LRC_POSTED),
+@@ -130,3 +173,13 @@ static inline void lrcSetOffsets(uint32_t *regs, const uint8_t *data, uint32_t b
+ 	}
+ 	*regs = MI_BATCH_BUFFER_END | 1;
+ }
++
++// Matches Linux drivers/gpu/drm/xe/xe_lrc.c reg_offsets() (and xe_probe.cpp):
++// XE_ENGINE_CLASS_COPY (drmClass == 1) uses gen12_xcs_offsets on all < 20.00 (including DG2 12.55);
++// CCS/VCS/VECS use dg2_xcs_offsets on >= 12.55 and gen12_xcs_offsets below 12.55.
++static inline const uint8_t *lrcRegOffsets(uint16_t graphicsVerx100, uint16_t drmClass) {
++	if (drmClass == 0) return graphicsVerx100 >= 2000 ? xe2_rcs_offsets : dg2_rcs_offsets;
++	if (drmClass == 1) return graphicsVerx100 >= 2000 ? xe2_bcs_offsets : gen12_xcs_offsets;
++	if (graphicsVerx100 >= 2000) return xe2_xcs_offsets;
++	return graphicsVerx100 >= 1255 ? dg2_xcs_offsets : gen12_xcs_offsets;
++}

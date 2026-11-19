@@ -1,0 +1,221 @@
+diff --git a/kernel/IntelXe/xe_core.cpp b/kernel/IntelXe/xe_core.cpp
+index 82544e3..809c613 100644
+--- a/kernel/IntelXe/xe_core.cpp
++++ b/kernel/IntelXe/xe_core.cpp
+@@ -1200,8 +1200,19 @@ uint32_t IntelXe::slpcMinSet(uint32_t min, uint32_t rpe) {
+ // The floor is the administrator's (slpc_min), raised to an active slpc_boost lease's (xeBoostEffectiveMin), so that a
+ // GT reset during a lease keeps it.
+ void IntelXe::slpcParams() {
+-	const uint32_t cap = rd(0x138000), rp0 = mhzOf(cap & 0x1ff), rpn = mhzOf(cap >> 16 & 0x1ff),
++	uint32_t rp0 = 0, rpn = 0, rpe = 0;
++	if (!gXePlat || gXePlat->graphicsVerx100 >= 1270) {
++		const uint32_t cap = rd(0x138000);
++		rp0 = mhzOf(cap & 0x1ff);
++		rpn = mhzOf(cap >> 16 & 0x1ff);
+ 		rpe = mhzOf(rd(0x13800c) & 0x1ff);
++	} else {
++		const uint32_t cap = rd(RP_STATE_CAP_SNB), rec = rd(FREQ_INFO_REC);
++		rp0 = (cap & 0xff) * 50u;
++		rpn = ((cap >> 16) & 0xff) * 50u;
++		rpe = ((rec >> 8) & 0xff) * 50u;
++		if (!rpe) rpe = ((cap >> 8) & 0xff) * 50u;
++	}
+ 	gSlpcRpn = rpn;
+ 	gSlpcRp0 = rp0;
+ 	gSlpcRpe = rpe;
+@@ -1588,18 +1599,19 @@ bool IntelXe::fwHold(bool on) {
+ 	if (!mapBar0()) return false;
+ 	// the GT and the render domain (RC6 is the render well's power-down), requester bit 1 in both, as forcewake() takes
+ 	// bit 0; released in the reverse order
++	const uint32_t ackGtReg = (!gXePlat || gXePlat->graphicsVerx100 >= 1270) ? FORCEWAKE_ACK_GT_MTL : FORCEWAKE_ACK_GT;
+ 	uint32_t ack = 0, rack = 0;
+ 	bool ok;
+ 	if (on) {
+ 		wr(FORCEWAKE_GT, 0x20002);
+-		ok = waitFor(FORCEWAKE_ACK_GT_MTL, 2, 2, 50000, &ack);
++		ok = waitFor(ackGtReg, 2, 2, 50000, &ack);
+ 		wr(FORCEWAKE_RENDER, 0x20002);
+ 		ok = waitFor(FORCEWAKE_ACK_RENDER, 2, 2, 50000, &rack) && ok;
+ 	} else {
+ 		wr(FORCEWAKE_RENDER, 0x20000);
+ 		ok = waitFor(FORCEWAKE_ACK_RENDER, 2, 0, 50000, &rack);
+ 		wr(FORCEWAKE_GT, 0x20000);
+-		ok = waitFor(FORCEWAKE_ACK_GT_MTL, 2, 0, 50000, &ack) && ok;
++		ok = waitFor(ackGtReg, 2, 0, 50000, &ack) && ok;
+ 	}
+ 	LOG("GT+render forcewake hold %s: %s (ack 0x%08x / 0x%08x)", on ? "on" : "off", ok ? "ok" : "NO ACK", ack, rack);
+ 	return ok;
+@@ -1634,16 +1646,18 @@ int IntelXe::slpcStep() {
+ // are readable while the GT sleeps: xe_guc_pc_c_status, xe_guc_pc_rc6_residency), then the RC6/power-gate controls.
+ int IntelXe::powerReport() {
+ 	if (!mapBar0()) return ENXIO;
+-	const uint32_t wp1 = rd(0xc60), rc6a = rd(0x138108), mc6a = rd(0x138048), core = rd(0x138060);
++	const bool ver1270 = !gXePlat || gXePlat->graphicsVerx100 >= 1270;
++	const uint32_t ackGtReg = ver1270 ? FORCEWAKE_ACK_GT_MTL : FORCEWAKE_ACK_GT;
++	const uint32_t wp1 = rd(ver1270 ? 0xc60 : GT_PERF_STATUS), rc6a = rd(0x138108), mc6a = rd(0x138048), core = rd(GT_CORE_STATUS);
+ 	IOSleep(100);   // gDevLock only: GPU clients do not wait for it
+-	const uint32_t rc6b = rd(0x138108), mc6b = rd(0x138048), wp1b = rd(0xc60);
+-	const uint32_t cc = wp1 >> 9 & 0xf, ccb = wp1b >> 9 & 0xf;
+-	say("GT C-state (MTL_MIRROR_TARGET_WP1 12:9) %u then %u (0 = C0, 6 = C6, 15 = deeper/reset), CAGF %u MHz\n", cc, ccb,
+-		mhzOf(wp1 & 0x1ff));
++	const uint32_t rc6b = rd(0x138108), mc6b = rd(0x138048), wp1b = rd(ver1270 ? 0xc60 : GT_PERF_STATUS);
++	const uint32_t cc = ver1270 ? (wp1 >> 9 & 0xf) : (core & 7), ccb = ver1270 ? (wp1b >> 9 & 0xf) : (rd(GT_CORE_STATUS) & 7);
++	const uint32_t cagf = ver1270 ? (wp1 & 0x1ff) : ((wp1 >> 11) & 0x1ff);
++	say("GT C-state %u then %u (0 = C0, 6 = C6, 15 = deeper/reset), CAGF %u MHz\n", cc, ccb, mhzOf(cagf));
+ 	say("RC6 residency %u%% of the last 100 ms (GT_GFX_RC6 %u -> %u, 1.28 us units); media MC6 %u%%; GT_CORE_STATUS 0x%08x\n",
+ 		(uint32_t)((uint64_t)(rc6b - rc6a) * 128 / 100000), rc6a, rc6b, (uint32_t)((uint64_t)(mc6b - mc6a) * 128 / 100000),
+ 		core);
+-	say("forcewake ack GT 0x%08x (bit 0 kernel, bit 1 hold %s)\n", rd(FORCEWAKE_ACK_GT_MTL), gFwHold ? "on" : "off");
++	say("forcewake ack GT 0x%08x (bit 0 kernel, bit 1 hold %s)\n", rd(ackGtReg), gFwHold ? "on" : "off");
+ 	if (!forcewake(true)) return ETIMEDOUT;
+ 	say("RC_CONTROL 0x%08x RC_STATE 0x%08x RC_IDLE_HYSTERSIS 0x%08x POWERGATE_ENABLE 0x%08x; sysctls gucrc %d rc6 %d\n",
+ 		rd(0xa090), rd(0xa094), rd(0xa0ac), rd(0xa210), gGucRc, gRc6Ctl);
+@@ -1662,21 +1676,29 @@ uint64_t IntelXe::vramUsableEnd() {
+ 	const uint64_t tile = (uint64_t)(range >> 8 & 0x3ff) << 30, tileOff = (uint64_t)(range >> 1 & 0x7f) << 30;
+ 	const uint64_t gsm = ((uint64_t)rd(GSMBASE + 4) << 32 | rd(GSMBASE)) & ~0xfffffull;
+ 	const uint64_t dsm = ((uint64_t)rd(DSMBASE + 4) << 32 | rd(DSMBASE)) & ~0xfffffull;   // BDSM_MASK 63:20
+-	const uint32_t lo = rd(0x8800), hi = rd(0x8804), nodes = (uint32_t)__builtin_popcount(rd(0x9118) >> 16);
+-	uint64_t ccs = (((uint64_t)(hi & 0xff) << 32) | (lo & 0xffffffc0u)) * nodes;
+-	ccs &= ~0xfffull;
+ 	const uint64_t ccsSize = tile / 512;
+-	uint64_t end = ccs;
+-	const bool ccsOk = (lo & 1) && tile && ccs > tile / 2 && ccs + ccsSize <= gsm && ccs <= tile;
+-	if (!ccsOk) end = gsm > ccsSize ? gsm - ccsSize : 0;
++	uint64_t ccs = 0;
++	bool ccsOk = false;
++	if (gXePlat && gXePlat->graphicsVerx100 < 2000) {
++		const uint32_t reg = rd(XEHP_FLAT_CCS_BASE_ADDR);
++		ccs = (uint64_t)(reg >> 8) << 16;   // XEHP_FLAT_CCS_PTR (31:8) * 64 KB
++		ccsOk = (reg != ~0u && reg != 0) && tile && ccs > tile / 2 && ccs + ccsSize <= gsm && ccs <= tile;
++		say("VRAM: tile %llu MB at %llu GB, XEHP flat CCS base 0x%llx (reg 0x%08x)%s, DSM 0x%llx, GSM 0x%llx\n",
++			tile >> 20, tileOff >> 30, ccs, reg, ccsOk ? "" : " IMPLAUSIBLE", dsm, gsm);
++	} else {
++		const uint32_t lo = rd(0x8800), hi = rd(0x8804), nodes = (uint32_t)__builtin_popcount(rd(0x9118) >> 16);
++		ccs = ((((uint64_t)(hi & 0xff) << 32) | (lo & 0xffffffc0u)) * nodes) & ~0xfffull;
++		ccsOk = (lo & 1) && tile && ccs > tile / 2 && ccs + ccsSize <= gsm && ccs <= tile;
++		say("VRAM: tile %llu MB at %llu GB, flat CCS base 0x%llx (lower 0x%08x upper 0x%08x, %u L3 nodes)%s, DSM 0x%llx, GSM 0x%llx\n",
++			tile >> 20, tileOff >> 30, ccs, lo, hi, nodes, ccsOk ? "" : " IMPLAUSIBLE", dsm, gsm);
++	}
++	uint64_t end = ccsOk ? ccs : (gsm > ccsSize ? gsm - ccsSize : 0);
+ 	if (dsm && dsm < end) end = dsm;
+ 	if (gsm && gsm < end) end = gsm;
+ 	end = (end - tileOff) & ~0xffffull;
+ 	const bool sane = tile && end >= (1ull << 30) && end <= tile;
+ 	const uint64_t fallback = tile >= (2ull << 30) && tile < (12ull << 30) ? (tile - tile / 12) & ~0xffffull : 0x2c0000000ull;
+-	say("VRAM: tile %llu MB at %llu GB, flat CCS base 0x%llx (lower 0x%08x upper 0x%08x, %u L3 nodes)%s, DSM 0x%llx, GSM "
+-		"0x%llx -> BOs end at 0x%llx%s\n", tile >> 20, tileOff >> 30, ccs, lo, hi, nodes, ccsOk ? "" : " IMPLAUSIBLE",
+-		dsm, gsm, sane ? end : fallback, sane ? "" : " (fallback)");
++	say("VRAM: BOs end at 0x%llx%s\n", sane ? end : fallback, sane ? "" : " (fallback)");
+ 	return sane ? end : fallback;
+ }
+ 
+@@ -1698,7 +1720,8 @@ void IntelXe::schedPolicyInit() {
+ 
+ void IntelXe::pcStart() {
+ 	schedPolicyInit();   // pcStart follows every primary GuC load (bring-up, GT reset, resume)
+-	const uint32_t rp0Raw = rd(0x138000) & 0x1ff;
++	const uint32_t rp0Raw = (!gXePlat || gXePlat->graphicsVerx100 >= 1270) ? (rd(0x138000) & 0x1ff)
++		: ((rd(RP_STATE_CAP_SNB) & 0xff) * 3u);
+ 	if (!gSlpcMem) gSlpcMem = alloc(0x2000, true);
+ 	IOBufferMemoryDescriptor *slpc = gSlpcMem;
+ 	bool slpcUp = false;
+@@ -1743,21 +1766,27 @@ int IntelXe::bringUp() {
+ 		say("bring-up refused: %s has no VRAM and the integrated memory path is not implemented\n", gXePlat->name);
+ 		return ENODEV;
+ 	}
++	const bool ver20 = !gXePlat || gXePlat->graphicsVerx100 >= 2000;
+ 	say("bring-up\n");
+ 	int err = firstBatchSetupOnly();
+ 	if (err) return err;
+ 	if (!bar2) bar2 = pci->mapDeviceMemoryWithRegister(0x18, kIOMapWriteCombineCache);
+-	if (!bar2) return ENXIO;
++	if (!bar2) {
++		if (ver20) return ENXIO;
++		say("BAR2 map failed (ResizeAppleGpuBars=-1 or unmapped 8GB BAR; continuing GuC-only Milestone 1 bring-up)\n");
++	}
+ 	if (!forcewake(true)) return ETIMEDOUT;
+-	vramEnd = vramUsableEnd();
+-	// rb7j: the GuC's UM queues at the top stay out of the BO allocator (set here too, in case no full GuC load came
+-	// first; the GuC loads that follow use the same range)
+-	if (gUsm && !gUmDpa) gUmDpa = umDpaFor(vramEnd);
+-	if (gUsm && gUmDpa && gUmDpa < vramEnd) vramEnd = gUmDpa;
+-	vramVisible = bar2->getLength() < vramEnd ? bar2->getLength() & ~0xffffull : vramEnd;
+-	say("BAR2 window %llu MB, VRAM for BOs %llu MB\n", vramVisible >> 20, vramEnd >> 20);
+-	wr(0x4194, rd(0x4194) | 1u << 6);   // Wa_16023588340: XE2_GAMREQSTRM_CTRL CG_DIS_CNTLBUS
+-	wr(0xb194 + 3 * 8, 0xf);             //                 XEHPC_L3CLOS_MASK(3)
++	if (bar2) {
++		vramEnd = vramUsableEnd();
++		if (gUsm && gXePlat && gXePlat->hasUsm && !gUmDpa) gUmDpa = umDpaFor(vramEnd);
++		if (gUsm && gXePlat && gXePlat->hasUsm && gUmDpa && gUmDpa < vramEnd) vramEnd = gUmDpa;
++		vramVisible = bar2->getLength() < vramEnd ? bar2->getLength() & ~0xffffull : vramEnd;
++		say("BAR2 window %llu MB, VRAM for BOs %llu MB\n", vramVisible >> 20, vramEnd >> 20);
++	}
++	if (ver20) {
++		wr(0x4194, rd(0x4194) | 1u << 6);   // Wa_16023588340: XE2_GAMREQSTRM_CTRL CG_DIS_CNTLBUS
++		wr(0xb194 + 3 * 8, 0xf);             //                 XEHPC_L3CLOS_MASK(3)
++	}
+ 	gGeomDss = rd(XELP_GT_GEOMETRY_DSS_ENABLE);
+ 	gCompDss = rd(XEHP_GT_COMPUTE_DSS_ENABLE);
+ 	gEuMask = rd(XELP_EU_ENABLE);
+@@ -1765,9 +1794,11 @@ int IntelXe::bringUp() {
+ 	gL3Mask = 0;
+ 	for (uint32_t b = 0; b < 16; b++)
+ 		if (fuse3 >> 16 & 1u << b) gL3Mask |= (uint64_t)((fuse3 >> 4) & 0xf) << (b * 4);
+-	// FF_MODE is not masked: keep the power-on value, set DIS_MESH_PARTIAL_AUTOSTRIP | DIS_MESH_AUTOSTRIP and
+-	// VS_HIT_MAX_VALUE 25:20 = 0x3f (Wa_14021490052, lrc tuning)
+-	gFfMode = (rd(0x6210) & ~(0x3fu << 20)) | 1u << 16 | 1u << 15 | 0x3fu << 20;
++	if (ver20) {
++		// FF_MODE is not masked: keep the power-on value, set DIS_MESH_PARTIAL_AUTOSTRIP | DIS_MESH_AUTOSTRIP and
++		// VS_HIT_MAX_VALUE 25:20 = 0x3f (Wa_14021490052, lrc tuning)
++		gFfMode = (rd(0x6210) & ~(0x3fu << 20)) | 1u << 16 | 1u << 15 | 0x3fu << 20;
++	}
+ 	uint32_t c0 = rd(0xd00);             // RPM_CONFIG0 (xe_gt_clock_init)
+ 	static const uint32_t freq[] = {24000000, 19200000, 38400000, 25000000};
+ 	gRefClock = ((c0 >> 3) & 7) < 4 ? freq[(c0 >> 3) & 7] >> (3 - ((c0 >> 1) & 3)) : 0;
+@@ -1778,22 +1809,27 @@ int IntelXe::bringUp() {
+ 	size_t sz = sizeof(gSysTotal);
+ 	sysctlbyname("hw.memsize", &gSysTotal, &sz, nullptr, 0);
+ 
+-	IOLockLock(gResLock);
+-	const bool vramOk = buddyInit(&gVis, vramUserStart, vramVisible) && buddyInit(&gHi, vramVisible, vramEnd);
+-	IOLockUnlock(gResLock);
+-	if (!vramOk) return ENOMEM;
+-	if (scratchInit()) return ENOMEM;
++	if (bar2) {
++		IOLockLock(gResLock);
++		const bool vramOk = buddyInit(&gVis, vramUserStart, vramVisible) && buddyInit(&gHi, vramVisible, vramEnd);
++		IOLockUnlock(gResLock);
++		if (!vramOk) return ENOMEM;
++	}
++	if (ver20 && bar2 && scratchInit()) return ENOMEM;
+ 	if (!gSeqnoMem) gSeqnoMem = alloc(kSlots * kSlotBytes, false);
+ 	if (!gSeqnoMem || ggttMap(gSeqnoMem, seqnoG)) return ENOMEM;
+ 	say("up: DSS 0x%x/0x%x EU 0x%x L3 0x%llx refclk %u, %llu MB RAM\n", gGeomDss, gCompDss, gEuMask, gL3Mask, gRefClock,
+ 		gSysTotal >> 20);
+ 	if (gIrqWanted && !irqOn) irqInit();
+ 	if (irqOn) irqGtEnable();   // also when IntelXeFB's display handler set the MSI up first
+-	recordGolden();
+-	vramClearInit();
+-	// xe_device_probe brings both GTs up: the media GT's GuC, HuC and SLPC now, so its VCS engines are listed from the
+-	// first query (debug.intelxe.video=0 or -intelxe_novideo: not; a failure is retried by mediaUp, at most every 10 s).
+-	if (gVideoWanted) {
++	if (ver20 && bar2) {
++		recordGolden();
++		vramClearInit();
++	} else {
++		gLrcVram = 0;   // Milestone 1 / Small-BAR fallback: keep LRCs out of unmapped BAR2
++	}
++	// xe_device_probe brings both GTs up when a standalone media GT exists (maxGtPerTile >= 2).
++	if (gVideoWanted && (!gXePlat || gXePlat->maxGtPerTile >= 2)) {
+ 		const int merr = mediaGucLoad();
+ 		say("media GT at bring-up: %s (%d)\n", merr ? "FAILED" : "up", merr);
+ 	}
+@@ -3233,7 +3269,7 @@ static int queueCreate(XeVm *vm, uint16_t cls, uint16_t inst, XeQueue **out, con
+ 	}
+ 	auto *ring = reinterpret_cast<uint32_t *>(l);
+ 	auto *regs = reinterpret_cast<uint32_t *>(l + ringSize + 0x1000);
+-	lrcSetOffsets(regs, eng->drmClass == 0 ? xe2_rcs_offsets : eng->drmClass == 1 ? xe2_bcs_offsets : xe2_xcs_offsets,
++	lrcSetOffsets(regs, lrcRegOffsets(gXePlat ? gXePlat->graphicsVerx100 : 2001, eng->drmClass),
+ 		eng->base);
+ 	regs[CTX_CONTEXT_CONTROL] = (1u << 3 | 1u) << 16 | (1u << 3 | 1u);
+ 	regs[CTX_RING_START] = q->lrcGgtt;
