@@ -1,5 +1,5 @@
 diff --git a/kernel/IntelXe/IntelXe.cpp b/kernel/IntelXe/IntelXe.cpp
-index 7936076..4f34670 100644
+index 7936076..a6897b2 100644
 --- a/kernel/IntelXe/IntelXe.cpp
 +++ b/kernel/IntelXe/IntelXe.cpp
 @@ -434,7 +434,19 @@ void IntelXe::sensorsSampleLocked(XeSensorsSample *x)
@@ -250,7 +250,46 @@ index 7936076..4f34670 100644
  	if (fw) forcewake(false, gt);
  }
  
-@@ -2034,9 +2094,11 @@ int IntelXe::gtReset() {
+@@ -1899,6 +1959,15 @@ bool DmaMap::lookup(uint64_t off, uint64_t *addr, uint64_t *run) const {
+ // framebuffer, what IntelXeFB would have written is written here, since IntelXeFB does not start: the hold by count goes
+ // to intelxe-accel-off, and intelxe-guard is cleared ("ok"), so clearing intelxe-accel-off alone ends the hold, as before.
+ // Both are kernel writes: lost in a power cut, which leaves accel<n> behind, and that holds the next boot the same way.
++static int darwinMajorVersion() {
++	char rel[32] = "";
++	size_t sz = sizeof(rel);
++	if (sysctlbyname("kern.osrelease", rel, &sz, nullptr, 0) != 0 || !rel[0]) return 0;
++	int major = 0;
++	for (const char *p = rel; *p >= '0' && *p <= '9'; p++) major = major * 10 + (*p - '0');
++	return major;
++}
++
+ void IntelXe::bootGuardDecide() {
+ 	if (guardDecided) return;
+ 	guardDecided = true;
+@@ -1907,11 +1976,21 @@ void IntelXe::bootGuardDecide() {
+ 	if (!guardNvRead("intelxe-accel-off", off, sizeof off)) off[0] = 0;
+ 	if (!guardNvRead("intelxe-held-display", hd, sizeof hd)) hd[0] = 0;
+ 	const bool noaccel = intelxeBootArg("IntelXe", "-intelxe_noaccel", dummy, sizeof dummy);
++	const bool nofb = intelxeBootArg("IntelXe", "-intelxe_nofb", dummy, sizeof dummy) ||
++	                  intelxeBootArg("IntelXe", "-intelxefb_off", dummy, sizeof dummy);
+ 	const bool safeMode = PE_parse_boot_argn("-x", dummy, sizeof dummy);
+ 	int hdArg = -1;
+ 	if (!PE_parse_boot_argn("intelxe_helddisplay", &hdArg, sizeof hdArg)) hdArg = -1;
++	const int darwinMajor = darwinMajorVersion();
+ 	const intelxeguard::Decision dec = intelxeguard::decide(guard, off, noaccel, safeMode);
+-	const int display = intelxeguard::heldDisplay(hd, hdArg);
++	// macOS 15 Sequoia (Darwin < 25) WindowServer draws cleanly on unaccelerated IntelXeFB; keep IONDRVFramebuffer
++	// on held boots only when explicitly requested (-intelxe_nofb / -intelxefb_off / -x / intelxe_helddisplay=0 / NVRAM),
++	// or on macOS 26+ (Darwin >= 25) where unaccelerated IntelXeFB stalls at the Apple logo.
++	const int baseDisplay = intelxeguard::heldDisplay(hd, hdArg);
++	const int display = nofb ? intelxeguard::kDisplayFirmware
++	                  : (darwinMajor > 0 && darwinMajor < 25 && !safeMode && hdArg == -1 && !intelxeguard::isSet(hd))
++	                    ? intelxeguard::kDisplayFramebuffer
++	                    : baseDisplay;
+ 	const bool firmware = dec.state == intelxeguard::kHeld && display == intelxeguard::kDisplayFirmware;
+ 	char counted[96], reason[128] = "";
+ 	snprintf(counted, sizeof counted, "%u accelerated boots in a row ended inside their first minute", dec.accelFails);   // IntelXeFB's text
+@@ -2034,9 +2113,11 @@ int IntelXe::gtReset() {
  	// rb7: the LRCs live in VRAM, written by the CPU through BAR2, which lands in the GPU's L2 (Wa_16023588340): write it
  	// back before the full reset, so no ring or context field the next registration needs can stay behind in it.
  	// Defensive (xe's do_gt_reset has no flush); a hung GPU makes it time out after 1 ms, which changes nothing.
@@ -265,7 +304,7 @@ index 7936076..4f34670 100644
  	wr(0x941c, 1);   // GDRST: GRDOM_FULL
  	uint32_t g = 0;
  	const bool done = waitFor(0x941c, 1, 0, 5000000, &g);
-@@ -2052,8 +2114,10 @@ int IntelXe::gtReset() {
+@@ -2052,8 +2133,10 @@ int IntelXe::gtReset() {
  	IOLockUnlock(gH2gLock[0]);
  	int err = firstBatchSetupOnly();   // engines, workarounds, GuC load, hwconfig, CT
  	if (!err && forcewake(true)) {
@@ -278,7 +317,7 @@ index 7936076..4f34670 100644
  		pcStart();
  		forcewake(false);
  	}
-@@ -2144,15 +2208,16 @@ void IntelXe::forcewakeRestore() {
+@@ -2144,15 +2227,16 @@ void IntelXe::forcewakeRestore() {
  	IOLockLock(gFwLock);
  	uint32_t ack = 0;
  	bool ok = true;
@@ -297,7 +336,7 @@ index 7936076..4f34670 100644
  	}
  	const uint32_t f0 = fwCount[0], f1 = fwCount[1];
  	IOLockUnlock(gFwLock);
-@@ -2209,8 +2274,10 @@ int IntelXe::gpuResume() {
+@@ -2209,8 +2293,10 @@ int IntelXe::gpuResume() {
  	IOLockUnlock(gH2gLock[0]);
  	if ((err = firstBatchSetupOnly())) return err;
  	if (forcewake(true)) {
@@ -310,7 +349,7 @@ index 7936076..4f34670 100644
  		pcStart();
  		forcewake(false);
  	}
-@@ -2321,6 +2388,7 @@ void IntelXe::adsRegsets(void *adsBlob, uint8_t *area, uint32_t areaG, uint32_t
+@@ -2321,6 +2407,7 @@ void IntelXe::adsRegsets(void *adsBlob, uint8_t *area, uint32_t areaG, uint32_t
  	};
  	if (!gt) {
  		bool firstRC = true;
@@ -318,7 +357,7 @@ index 7936076..4f34670 100644
  		for (uint32_t k = 0; k < gNumEngines; k++) {
  			const XeEngine &e = gEngines[k];
  			const uint32_t b = e.base;
-@@ -2330,26 +2398,30 @@ void IntelXe::adsRegsets(void *adsBlob, uint8_t *area, uint32_t areaG, uint32_t
+@@ -2330,26 +2417,30 @@ void IntelXe::adsRegsets(void *adsBlob, uint8_t *area, uint32_t areaG, uint32_t
  			r[m++] = {b + 0xc4, kMasked};    // RING_CMD_CCTL
  			r[m++] = {b + 0x98, 0};          // RING_HWSTAM
  			r[m++] = {b + 0x29c, kMasked};   // GFX_MODE
@@ -362,7 +401,7 @@ index 7936076..4f34670 100644
  			if (gNonpriv) {   // rb7p: RING_FORCE_TO_NONPRIV slots (xe_reg_whitelist_process_engine puts them in reg_sr)
  				uint32_t s[12];
  				const uint32_t ns = engineNonpriv(e.drmClass, s);
-@@ -2490,7 +2562,8 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
+@@ -2490,7 +2581,8 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
  	ads->ads.scheduler_policies = aG + offsetof(guc_ads_blob, policies);
  	ads->ads.gt_system_info = aG + offsetof(guc_ads_blob, system_info);
  	ads->ads.private_data = aG + (uint32_t)privOff;
@@ -372,7 +411,7 @@ index 7936076..4f34670 100644
  		static const uint32_t klvs[] = {0x9005u << 16, 0x9007u << 16, 0x9009u << 16, 0x900bu << 16};
  		// media 13.01: 16026508708 (RESET_BB_STACK_PTR_ON_VF_SWITCH), 14025515070 (CLR_CS_INDIRECT_RING_STATE, fw >= 70.53)
  		static const uint32_t mklvs[] = {0x900bu << 16, 0x900eu << 16};
-@@ -2504,7 +2577,7 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
+@@ -2504,7 +2596,7 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
  	// base_dpa, xe_guc_using_main_gamctrl_queues false) and GGTT, 64 KB each, page_response_timeout_in_us = -1
  	// (GUC_PAGE_RES_TIMEOUT_US). The media GT gets none here (Linux sets them on both GTs; a media fault stays a CAT
  	// error), so the media GuC's ADS is as before.
@@ -381,7 +420,7 @@ index 7936076..4f34670 100644
  	if (um) {
  		if (!gUmDpa) gUmDpa = umDpaFor(vramUsableEnd());
  		if (gUmDpa) {
-@@ -2537,7 +2610,7 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
+@@ -2537,7 +2629,7 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
  		params[GUC_CTL_FEATURE] = 1u << 4 | (gMediaSlpc ? 1u << 2 : 0);   // LITE_RESTORE, ENABLE_SLPC
  	} else if (full) {   // guc_init_params_post_hwconfig: feature flags; DUAL_QUEUE WA with CCS on >= 12.70
  		params[GUC_CTL_FEATURE] = 1u << 4 | 1u << 2;   // LITE_RESTORE, ENABLE_SLPC
@@ -390,7 +429,7 @@ index 7936076..4f34670 100644
  	}
  	// xe_uc_load_hw: xe_huc_upload before xe_guc_upload (media GT only; a failed HuC DMA does not stop the GuC)
  	if (full && gt) hucUpload();
-@@ -2546,9 +2619,11 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
+@@ -2546,9 +2638,11 @@ int IntelXe::loadGuc(bool full, uint32_t gt) {
  	wr(gt + SOFT_SCRATCH0, 0);
  	for (int i = 0; i < GUC_CTL_MAX_DWORDS; i++) wr(gt + SOFT_SCRATCH0 + 4 * (1 + i), params[i]);
  
@@ -405,7 +444,7 @@ index 7936076..4f34670 100644
  	wr(GT_PM_CONFIG, 1);
  	wr(gt + PMINTRMSK, rd(gt + PMINTRMSK) & ~(1u << 9));
  
-@@ -2793,7 +2868,7 @@ static bool gIdledlyDone[2];
+@@ -2793,7 +2887,7 @@ static bool gIdledlyDone[2];
  uint32_t IntelXe::engineNonpriv(uint16_t drmClass, uint32_t *s) {
  	constexpr uint32_t RD = 1u << 28, DENY = 1u << 30, RANGE_4 = 1u;   // ACCESS_RW is 0
  	uint32_t n = 0;
@@ -414,7 +453,7 @@ index 7936076..4f34670 100644
  		s[n++] = 0x6210;   // FF_MODE (Wa_14024997852)
  		s[n++] = 0x62a8;   // VFLSKPD (Wa_14024997852)
  	}
-@@ -2823,7 +2898,8 @@ void IntelXe::engineExtras(uint32_t base, uint16_t drmClass) {
+@@ -2823,7 +2917,8 @@ void IntelXe::engineExtras(uint32_t base, uint16_t drmClass) {
  		const uint32_t n = engineNonpriv(drmClass, s);
  		for (uint32_t i = 0; i < n; i++) wr(base + 0x4d0 + 4 * i, s[i]);
  	}
@@ -424,7 +463,7 @@ index 7936076..4f34670 100644
  }
  
  // xe_gt_has_discontiguous_dss_groups (xe_gt_topology.c:337): walking the DSS enabled for geometry or compute
-@@ -3029,55 +3105,56 @@ int IntelXe::firstBatchSetupOnly() {
+@@ -3029,55 +3124,56 @@ int IntelXe::firstBatchSetupOnly() {
  	// Engines: RCS0, BCS0 (BCS8 is Linux's USM reserve) and the CCS instances XEHP_FUSE4 CCS_EN_MASK leaves on of those
  	// the platform's engine mask has (read_compute_fuses_from_reg), then hw_engine_setup_default_state +
  	// xe_hw_engine_enable_ring for each, before the GuC load as in xe_gt_init.
@@ -523,7 +562,7 @@ index 7936076..4f34670 100644
  	}
  	say("engines: RCS0 BCS0 CCS mask 0x%x\n", ccs);
  	forcewake(false);
-@@ -3124,7 +3201,7 @@ int IntelXe::firstBatch() {
+@@ -3124,7 +3220,7 @@ int IntelXe::firstBatch() {
  	bzero(l, lrcMem->getLength());
  	auto *ring = reinterpret_cast<uint32_t *>(l);
  	auto *regs = reinterpret_cast<uint32_t *>(l + ringSize + 0x1000);
@@ -532,7 +571,7 @@ index 7936076..4f34670 100644
  	regs[CTX_CONTEXT_CONTROL] = (1u << 3 | 1u) << 16 | (1u << 3 | 1u);   // INHIBIT_SYN_CTX_SWITCH, ENGINE_CTX_RESTORE_INHIBIT
  	regs[CTX_RING_START] = lrcG;
  	regs[CTX_RING_CTL] = (ringSize - 0x1000) | 1;
-@@ -3220,9 +3297,11 @@ int IntelXe::vramTest() {
+@@ -3220,9 +3316,11 @@ int IntelXe::vramTest() {
  	}
  	say("BAR2 phys 0x%llx len 0x%llx\n", bar2->getPhysicalAddress(), bar2->getLength());
  	if (!forcewake(true)) return ETIMEDOUT;
@@ -547,7 +586,7 @@ index 7936076..4f34670 100644
  
  	// CPU only: 4 KB pattern at three places in the CPU-visible window.
  	auto *v = reinterpret_cast<volatile uint32_t *>(bar2->getVirtualAddress());
-@@ -3245,9 +3324,14 @@ int IntelXe::vramTest() {
+@@ -3245,9 +3343,14 @@ int IntelXe::vramTest() {
  	volatile uint32_t *cpu = v + dpa / 4;
  	cpu[0] = 0;
  	asm volatile("sfence" : : : "memory");
@@ -565,7 +604,7 @@ index 7936076..4f34670 100644
  	auto *target = reinterpret_cast<volatile uint32_t *>(static_cast<uint8_t *>(miscMem->getBytesNoCopy()) + targetOff);
  	const uint32_t job[] = {
  		MI_STORE_DATA_IMM | MI_SDI_GGTT | MI_SDI_NUM_DW(1), vramG, 0, 0x0b580e3a,
-@@ -3256,9 +3340,12 @@ int IntelXe::vramTest() {
+@@ -3256,9 +3359,12 @@ int IntelXe::vramTest() {
  	int err = submit(job, 8, target, 0x2, 2000);
  	if (!err) {
  		uint32_t before = cpu[0];
@@ -581,7 +620,7 @@ index 7936076..4f34670 100644
  		say("GPU->VRAM: CPU reads 0x%08x before L2 flush, 0x%08x after (flush %s) -> %s\n", before, cpu[0],
  			ok ? "done" : "TIMEOUT", cpu[0] == 0x0b580e3a ? "VRAM WRITE SEEN" : "not seen");
  		if (cpu[0] != 0x0b580e3a) err = EIO;
-@@ -3308,7 +3395,7 @@ int IntelXe::ppgttTest() {
+@@ -3308,7 +3414,7 @@ int IntelXe::ppgttTest() {
  	bzero(l, lrc1Mem->getLength());
  	auto *ring = reinterpret_cast<uint32_t *>(l);
  	auto *regs = reinterpret_cast<uint32_t *>(l + ringSize + 0x1000);
@@ -590,7 +629,7 @@ index 7936076..4f34670 100644
  	regs[CTX_CONTEXT_CONTROL] = (1u << 3 | 1u) << 16 | (1u << 3 | 1u);
  	regs[CTX_RING_START] = lrc1G;
  	regs[CTX_RING_CTL] = (ringSize - 0x1000) | 1;
-@@ -3391,6 +3478,7 @@ bool IntelXe::mediaEngineWake(bool on) {
+@@ -3391,6 +3497,7 @@ bool IntelXe::mediaEngineWake(bool on) {
  // (xe_hw_engine_enable_ring), then the GuC load and CT. Power gating stays as found (Linux enables it in
  // xe_gt_idle_enable_pg, minus VDN0/2 for Wa_14020316580).
  int IntelXe::mediaGucLoad() {

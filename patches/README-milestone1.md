@@ -2,7 +2,7 @@
 
 Target upstream repository: `yusufklncc/intel-gpu-macos-driver` (`main` @ `990b650315b1727f825ab37186be9d1142c97bf7`)
 Target GPU: **Intel Arc A750** (`0x8086:0x56A1`, DG2-G10 / Alchemist, Xe-HPG `12.55`, pre-GMD_ID)
-Target Host: AMD Ryzen 5 3600 (OpenCore + AMD Vanilla patches, no iGPU), macOS Tahoe
+Target Host: AMD Ryzen 5 3600 (OpenCore + AMD Vanilla patches, no iGPU), **macOS 15 Sequoia (Darwin 24.x)**
 
 ## Scope (Strict Milestone 1)
 - **Modified**: `IntelXE.kext` only (`kernel/IntelXe/{build.py,xe_platform.cpp,IntelXe.h,lrc.h,IntelXe.cpp,xe_core.cpp}`).
@@ -29,7 +29,7 @@ git apply /path/to/patches/milestone1-dg2-0x56a1.patch
 
 ## 2. Build `IntelXE.kext` (CLI or Xcode External Build System)
 
-This repository builds `IntelXE.kext` using `kernel/IntelXe/build.py` against `MacKernelSDK` (no standalone `.xcodeproj` target is shipped).
+This repository builds `IntelXE.kext` using `kernel/IntelXe/build.py` against `MacKernelSDK` (no standalone `.xcodeproj` target is shipped). Both `IntelXe.kext` and `IntelXeFB.kext` are linked with `-mmacosx-version-min=10.6` and `-no_fixup_chains`, making the compiled binaries directly compatible with macOS 15 Sequoia (`Darwin 24.x`).
 
 ### Direct macOS Build
 ```bash
@@ -54,7 +54,7 @@ If building from Xcode:
 -v debug=0x144 keepsyms=1 -intelxe_allow_dg2 -intelxe_nofb -intelxe_noaccel -intelxe_nometal
 ```
 - `-intelxe_allow_dg2`: Opts into untested DG2/Alchemist probe (`d.testerBootArg = "intelxe_allow_dg2"`).
-- `-intelxe_nofb -intelxe_noaccel -intelxe_nometal`: Keeps display handoff on Apple `IONDRVFramebuffer` (`bootGuardHandOff()` sets `nmxgpu-claimed = false`) so you keep console/SSH access while testing `IntelXE.kext` alone.
+- `-intelxe_nofb -intelxe_noaccel -intelxe_nometal`: `IntelXe::bootGuardDecide()` explicitly forces `kDisplayFirmware` whenever `-intelxe_nofb` (or `-intelxefb_off`) is present, keeping display handoff on Apple `IONDRVFramebuffer` (`bootGuardHandOff()` sets `nmxgpu-claimed = false`) so you keep console/SSH access while testing `IntelXE.kext` alone. *(On macOS 15 Sequoia `Darwin < 25`, omitting `-intelxe_nofb` lets unaccelerated `IntelXeFB` draw WindowServer cleanly in Milestone 2.)*
 
 ### B. `ResizeAppleGpuBars` Paths (`Booter -> Quirks -> ResizeAppleGpuBars`)
 With Resizable BAR enabled in BIOS on Ryzen 3600 + Arc A750 (8 GB BAR2):
@@ -70,7 +70,7 @@ With Resizable BAR enabled in BIOS on Ryzen 3600 + Arc A750 (8 GB BAR2):
 
 ## 4. First-Boot SSH Verification Commands
 
-After booting into macOS Tahoe and connecting over SSH:
+After booting into macOS 15 Sequoia and connecting over SSH:
 
 ```bash
 # 1. Confirm IntelXe attached to 0x56a1 and check platform/ready properties
